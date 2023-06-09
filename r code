@@ -1,0 +1,48 @@
+library(dplyr)
+library(stringr)
+library(e1071)
+
+inspection <- read.csv('2022DOHMH_New_York_City_Restaurant_Inspection_Results.csv')
+
+inspection2022_rats <-inspection %>% 
+mutate(INSPECTION.DATE= as.Date(INSPECTION.DATE, format= "%m/%d/%Y"),
+       BORO=toupper(BORO),
+              Community.Board_lookup=Community.Board,
+              Community.Board_new=str_sub(Community.Board, 2),
+              Community.Board=paste(Community.Board_new,BORO)) %>%  #donig this so that the community board naming convention is the same as the 311 naming convention
+filter(INSPECTION.DATE>='2022-01-01' & INSPECTION.DATE<'2023-01-01' & (VIOLATION.CODE =='04K'|VIOLATION.CODE =='04L'|VIOLATION.CODE =='08A'))
+
+data_311_rats_2022 <- read.csv('311_Service_Requests_from_2010_to_Present_rats.csv') 
+#from here #from here https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9/explore/query/SELECT%0A%20%20%60unique_key%60%2C%0A%20%20%60created_date%60%2C%0A%20%20%60closed_date%60%2C%0A%20%20%60agency%60%2C%0A%20%20%60agency_name%60%2C%0A%20%20%60complaint_type%60%2C%0A%20%20%60descriptor%60%2C%0A%20%20%60location_type%60%2C%0A%20%20%60incident_zip%60%2C%0A%20%20%60incident_address%60%2C%0A%20%20%60street_name%60%2C%0A%20%20%60cross_street_1%60%2C%0A%20%20%60cross_street_2%60%2C%0A%20%20%60intersection_street_1%60%2C%0A%20%20%60intersection_street_2%60%2C%0A%20%20%60address_type%60%2C%0A%20%20%60city%60%2C%0A%20%20%60landmark%60%2C%0A%20%20%60facility_type%60%2C%0A%20%20%60status%60%2C%0A%20%20%60due_date%60%2C%0A%20%20%60resolution_description%60%2C%0A%20%20%60resolution_action_updated_date%60%2C%0A%20%20%60community_board%60%2C%0A%20%20%60bbl%60%2C%0A%20%20%60borough%60%2C%0A%20%20%60x_coordinate_state_plane%60%2C%0A%20%20%60y_coordinate_state_plane%60%2C%0A%20%20%60open_data_channel_type%60%2C%0A%20%20%60park_facility_name%60%2C%0A%20%20%60park_borough%60%2C%0A%20%20%60vehicle_type%60%2C%0A%20%20%60taxi_company_borough%60%2C%0A%20%20%60taxi_pick_up_location%60%2C%0A%20%20%60bridge_highway_name%60%2C%0A%20%20%60bridge_highway_direction%60%2C%0A%20%20%60road_ramp%60%2C%0A%20%20%60bridge_highway_segment%60%2C%0A%20%20%60latitude%60%2C%0A%20%20%60longitude%60%2C%0A%20%20%60location%60%2C%0A%20%20%60%3A%40computed_region_efsh_h5xi%60%2C%0A%20%20%60%3A%40computed_region_f5dn_yrer%60%2C%0A%20%20%60%3A%40computed_region_yeji_bk3q%60%2C%0A%20%20%60%3A%40computed_region_92fq_4b7q%60%2C%0A%20%20%60%3A%40computed_region_sbqj_enih%60%0AWHERE%0A%20%20%28%60agency%60%20IN%20%28%22DOHMH%22%29%29%0A%20%20AND%20%28%28%60complaint_type%60%20IN%20%28%22Rodent%22%29%29%0A%20%20%20%20%20%20%20%20%20AND%20%28%60created_date%60%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20BETWEEN%20%222022-01-01T01%3A45%3A30%22%20%3A%3A%20floating_timestamp%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20AND%20%222022-12-31T23%3A45%3A30%22%20%3A%3A%20floating_timestamp%29%29%0AORDER%20BY%20%60created_date%60%20DESC%20NULL%20FIRST/page/filter
+
+#aggregate number of 311 requests related to a rodent to community board
+comm_board_agg_311 <- data_311_rats_2022 %>% 
+group_by(Community.Board) %>% 
+summarise(num_311=n())
+
+#aggregate number of restaurant violations leading to a rodent violation to community board
+comm_board_agg_inspection <- inspection2022_rats %>% 
+  group_by(Community.Board,Community.Board_lookup) %>% 
+  summarise(num_inspections=n())
+
+#combine data
+rats_combined <- comm_board_agg_311 %>% 
+  merge(comm_board_agg_inspection, by="Community.Board") %>% 
+  mutate(Community.Board_lookup=paste(Community.Board_lookup,'.000', sep = ""), #creating a lookup community board value which joins to the city's open data community board boundary file
+         ratio=num_311/num_inspections) # considering using the ratio of inspections finding a rodent and 311 rat complaints 
+
+write.csv(rats_combined, 'rats_combined.csv')
+#boundaries from here https://data.cityofnewyork.us/City-Government/Community-Districts/yfnk-k7r4
+
+#an value of skew over 0 means there's skew, anything over 1 means kinda significant, anything a 1.5 or more is quite skewed, requiring a different correlation test
+skewness(rats_combined$num_311) #1.09
+skewness(rats_combined$num_inspections) #1.5, positively skewed distribution
+
+correl <-cor.test(rats_combined$num_311, rats_combined$num_inspections,  method = "spearman",exact = FALSE)
+#use spearman because the data is not normally distributed, p-value = 0.001141
+#rho is the Spearman’s correlation coefficient, .40
+
+#don't use this, it assumes normal distribution, just to see if it gets a different value. It does, explains importance of using correct test based on skew
+correl_pearson <- cor.test(rats_combined$num_311, rats_combined$num_inspections, 
+                method = "pearson")
+#p-value = 0.07725
